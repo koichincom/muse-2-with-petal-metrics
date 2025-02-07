@@ -1,0 +1,59 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+*.env
+*.venv
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Testing
+.tox/
+.nox/
+.coverage
+htmlcov/
+.cache
+.pytest_cache/
+
+# Pipenv
+Pipfile.lock
+
+# mypy
+.mypy_cache/
+
+# Pyright
+.pyright/
+
+# Profiling data
+*.prof
+*.dat
+*.pstats
