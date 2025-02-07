@@ -1,107 +1,90 @@
-import time
-import matplotlib.pyplot as plt
 import numpy as np
-from collections import deque
+import matplotlib.pyplot as plt
+import scipy.signal as signal
 from pylsl import StreamInlet, resolve_streams
+import time
 
-# Parameters for EEG and blink detection
-fs = 256                        # Sampling rate for Muse 2 (Hz)
-frame_interval = 10            # seconds per frame
-frame_size = int(fs * frame_interval)  # Number of samples per frame
+# Resolve LSL streams and select the EEG stream from Petal
+streams = resolve_streams()
+eeg_stream = next(s for s in streams if s.name() == "PetalStream_eeg")
+inlet = StreamInlet(eeg_stream)
 
-channel_index = 1               # Choose the channel for blink detection (e.g., AF7)
+# Define a bandpass filter function (1–10 Hz)
+def bandpass_filter(data, lowcut=1, highcut=10, fs=256, order=4):
+    nyquist = 0.5 * fs
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    b, a = signal.butter(order, [low, high], btype='band')
+    return signal.filtfilt(b, a, data)
 
-# Advanced detection parameters
-zscore_threshold = 3.0          # A blink is detected if the z-score exceeds this value
-refractory_period = 0.3         # In seconds, ignore further detections for 300 ms
+# Set up parameters for plotting
+fs = 256                          # Sampling rate (Hz)
+window_size = 2 * fs              # 2-second data window
+data_buffer_af7 = np.zeros(window_size)
+data_buffer_af8 = np.zeros(window_size)
+time_axis = np.linspace(-2, 0, window_size)  # X-axis from -2 to 0 seconds
 
-# -------------------------------
-# Set up the LSL EEG stream
-print("Looking for an EEG stream")
-streams = resolve_streams(wait_time=1.0)
-# Filter by stream name 'PetalStream_eeg'
-eeg_streams = [s for s in streams if s.name() == 'PetalStream_eeg']
-if not eeg_streams:
-    print("No EEG stream found!")
-    exit()
+# Read initial EEG data (buffer filling)
+print("Collecting initial EEG data...")
+for i in range(window_size):
+    sample, timestamp = inlet.pull_sample()
+    data_buffer_af7[i] = sample[1]  # AF7
+    data_buffer_af8[i] = sample[2]  # AF8
 
-inlet = StreamInlet(eeg_streams[0])
-print("Successfully connected to EEG stream")
+# Apply bandpass filter separately to AF7 and AF8
+filtered_af7 = bandpass_filter(data_buffer_af7)
+filtered_af8 = bandpass_filter(data_buffer_af8)
 
-# -------------------------------
-# Set up buffers for the sliding window (for blink detection) and time stamping
-raw_buffer = deque(maxlen=frame_size)
-time_buffer = deque(maxlen=frame_size)
+# Detect blinks based on filtered signals separately
+peaks_af7, _ = signal.find_peaks(filtered_af7, height=100, distance=50)
+peaks_af8, _ = signal.find_peaks(filtered_af8, height=100, distance=50)
 
-# -------------------------------
-# Function to compute z-score
-def compute_zscore(data):
-    mean_val = np.mean(data)
-    std_val = np.std(data)
-    # Avoid division by zero
-    if std_val == 0:
-        return np.zeros_like(data)
-    return (data - mean_val) / std_val
-
-# -------------------------------
-# Set up Matplotlib for real-time plotting of raw EEG with blink markers
+# Initialize plot
 plt.ion()
-fig, ax = plt.subplots(figsize=(12, 4))
-line, = ax.plot([], [], lw=1.5, color='blue', label=f'EEG (Channel {channel_index})')
+fig, ax = plt.subplots(figsize=(10, 5))
+line_af7, = ax.plot(time_axis, filtered_af7, label="EEG Signal (AF7)", color='blue')
+line_af8, = ax.plot(time_axis, filtered_af8, label="EEG Signal (AF8)", color='green')
+
+# Scatter plots for detected blinks
+scatter_af7 = ax.scatter(time_axis[peaks_af7], filtered_af7[peaks_af7], color='red', label="Blink (AF7)")
+scatter_af8 = ax.scatter(time_axis[peaks_af8], filtered_af8[peaks_af8], color='orange', label="Blink (AF8)")
+
+ax.set_ylim(-200, 200)
 ax.set_xlabel("Time (s)")
-ax.set_ylabel("EEG Amplitude (µV)")
-ax.set_title("Real-Time EEG Signal with Blink Detection")
-ax.set_ylim(-1500, 1500)
-ax.legend()
+ax.set_ylabel("EEG Signal")
+ax.set_title("Real-time EEG with Blink Detection")
+
+# Move legend outside of the plot
+ax.legend(loc='upper left', bbox_to_anchor=(1, 1))  # Position legend outside
+
 plt.tight_layout()
+plt.show()
 
-start_time = time.time()
-last_blink_time = 0
-
-# List to keep track of blink markers for later removal if needed
-blink_marker_lines = []
-
-# -------------------------------
-# Main loop: acquire data, compute blink metric, and update the plot
+# Continuous update loop
 while True:
-    # Pull a sample from the LSL stream (non-blocking)
-    sample, ts = inlet.pull_sample(timeout=0.0)
-    if sample is not None:
-        current_time = time.time() - start_time
-        # Append current sample (from chosen channel) and timestamp to buffers
-        raw_buffer.append(sample[channel_index])
-        time_buffer.append(current_time)
-        
-        # When we've collected enough samples for one frame, process the data
-        if len(raw_buffer) == frame_size:
-            data_array = np.array(raw_buffer)
-            # Compute the derivative of the signal in the frame
-            derivative = np.diff(data_array)
-            # Compute the absolute derivative values
-            abs_deriv = np.abs(derivative)
-            # Compute z-score for the derivative values
-            z_scores = compute_zscore(abs_deriv)
-            max_z = np.max(z_scores)
-            
-            # Check if blink is detected: if max z-score exceeds the threshold and refractory period has passed
-            if max_z > zscore_threshold and (current_time - last_blink_time) > refractory_period:
-                last_blink_time = current_time
-                print(f"Blink detected at {current_time:.2f}s with z-score {max_z:.2f}")
-                # Mark the blink on the plot with a vertical red dashed line
-                marker_line = ax.axvline(x=current_time, color='red', linestyle='--', linewidth=1)
-                blink_marker_lines.append(marker_line)
-            
-            # Optionally, clear the raw buffer to start a new frame.
-            # (Alternatively, you can use overlapping windows for continuous detection.)
-            raw_buffer.clear()
-            time_buffer.clear()
-        
-        # Update the plot with current raw EEG data
-        line.set_data(np.array(time_buffer), np.array(raw_buffer))
-        # Adjust x-axis limits so the plot scrolls; show the last frame_interval seconds
-        if time_buffer:
-            ax.set_xlim(max(0, current_time - frame_interval), current_time + 0.1)
-        fig.canvas.draw()
-        fig.canvas.flush_events()
-    
-    time.sleep(1.0 / fs)
+    # Shift data buffer to the left (scrolling effect)
+    data_buffer_af7 = np.roll(data_buffer_af7, -1)
+    data_buffer_af8 = np.roll(data_buffer_af8, -1)
+
+    # Read a new EEG sample
+    sample, timestamp = inlet.pull_sample()
+    data_buffer_af7[-1] = sample[1]  # AF7
+    data_buffer_af8[-1] = sample[2]  # AF8
+
+    # Apply bandpass filter separately to AF7 and AF8
+    filtered_af7 = bandpass_filter(data_buffer_af7)
+    filtered_af8 = bandpass_filter(data_buffer_af8)
+
+    # Update the plotted waveforms
+    line_af7.set_ydata(filtered_af7)
+    line_af8.set_ydata(filtered_af8)
+
+    # Detect new peaks for blink detection
+    peaks_af7, _ = signal.find_peaks(filtered_af7, height=100, distance=50)
+    peaks_af8, _ = signal.find_peaks(filtered_af8, height=100, distance=50)
+
+    # Update scatter plots
+    scatter_af7.set_offsets(np.column_stack((time_axis[peaks_af7], filtered_af7[peaks_af7])))
+    scatter_af8.set_offsets(np.column_stack((time_axis[peaks_af8], filtered_af8[peaks_af8])))
+
+    plt.pause(1.0 / fs)
