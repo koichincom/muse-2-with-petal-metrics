@@ -1,4 +1,1 @@
-use the following to activate the venv
-```
-source muse_env/bin/activate
-```
+These codes are tests for Muse 2 with Petal Metrics. 
